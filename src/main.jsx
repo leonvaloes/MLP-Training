@@ -117,7 +117,7 @@ function App() {
         }
 
         const timeoutId = window.setTimeout(() => {
-            setNotification('');
+            setNotification(null);
         }, 5200);
 
         return () => window.clearTimeout(timeoutId);
@@ -198,12 +198,12 @@ function App() {
         const numberOfOutputs = numberOfOutputsFromCsv || 2;
         const hiddenNeuronsCount = Number.parseInt(config.hiddenNeurons, 10) || 2;
         const randomWeights = generateRandomWeights(numberOfInputs, hiddenNeuronsCount, numberOfOutputs);
-        const { model, MlpInformation } = buildMlpWeights(numberOfInputs, hiddenNeuronsCount, numberOfOutputs, randomWeights);
+        const { MLPWeights, MlpInformation } = buildMlpWeights(numberOfInputs, hiddenNeuronsCount, numberOfOutputs, randomWeights);
 
         setWeights(randomWeights);
         setMlpHiddenInformation(MlpInformation.hidden);
         setMlpOutputInformation(MlpInformation.output);
-        setMlpModel(model);
+        setMlpModel(MLPWeights);
         setNotification({
             title: 'Teste aleatório gerado',
             description: 'Um conjunto de pesos aleatórios foi criado apenas para visualizar a estrutura do modelo.',
@@ -302,11 +302,7 @@ function App() {
 
                     <label className="field">
                         <span>Função de transferência</span>
-                        <select
-                            defaultValue=""
-                            value={config.activationFunction}
-                            onChange={(e) => setConfig({ ...config, activationFunction: e.target.value })}
-                        >
+                        <select value={config.activationFunction} onChange={(e) => setConfig({ ...config, activationFunction: e.target.value })}>
                             <option value="" disabled>
                                 Selecione
                             </option>
@@ -507,8 +503,9 @@ function Layer({ title, labels }) {
 }
 
 function ModelPreview({ model, weights }) {
-    const inputToHiddenPreview = model.inputToHidden.slice(0, 4);
-    const hiddenToOutputPreview = model.hiddenToOutput.slice(0, 4);
+    const safeModel = model ?? { inputToHidden: [], hiddenToOutput: [] };
+    const inputToHiddenPreview = safeModel.inputToHidden.slice(0, 4);
+    const hiddenToOutputPreview = safeModel.hiddenToOutput.slice(0, 4);
 
     if (weights.length === 0) {
         return <div className="model-preview empty-preview">Nenhum teste aleatório gerado ainda.</div>;
@@ -648,31 +645,48 @@ function generateRandomWeights(inputCount, hiddenNeuronsCount, outputCount) {
     return randomWeights;
 }
 
-function predict(inputCount, hiddenNeuronsCount, outputCount, MlpModel, lineInputs) {
+function updateNetHiddenInformation(mlpHiddenInformation, neuronIndex, netValue) {
+    const updatedNet = [...mlpHiddenInformation.net];
+    updatedNet[neuronIndex] = netValue;
+    setMlpHiddenInformation({
+        ...mlpHiddenInformation,
+        net: updatedNet,
+    });
+}
+
+function updateNetOutputInformation(mlpOutputInformation, neuronIndex, netValue) {
+    const updatedNet = [...mlpOutputInformation.net];
+    updatedNet[neuronIndex] = netValue;
+    setMlpOutputInformation({
+        ...mlpOutputInformation,
+        net: updatedNet,
+    });
+}
+
+function predict(mlpHiddenInformation, mlpOutputInformation, MlpModel, lineInputs) {
+    const hiddenNeuronsCount = mlpHiddenInformation.net.length;
+    const inputCount = lineInputs.net.length - 1;
+    const outputCount = mlpOutputInformation.net.length - 1;
     //calculo do net da camada camada de entrada para camada oculta
     for (let i = 0; i < hiddenNeuronsCount; i++) {
-        const connection = MlpModel.hiddenToOutput[i];
         let net = 0;
         for (let j = 0; j < inputCount; j++) {
             //a conexão de entrada para camada oculta é indexada por j * outputCount + i, onde j percorre as entradas e i o neurônio oculto atual
-            let indice = j * outputCount + i;
+            let indice = j * (hiddenNeuronsCount - 1) + i;
             const inputConnection = MlpModel.inputToHidden[indice];
             net += inputConnection.weight * lineInputs[j];
         }
-        connection.net = net;
+        updateNetHiddenInformation(mlpHiddenInformation, i, net);
     }
 
-    //calculo do net da camada oculta para camada de saída
     for (let i = 0; i < outputCount; i++) {
-        const connection = MlpModel.hiddenToOutput[i];
         net = 0;
         for (let j = 0; j < hiddenNeuronsCount; j++) {
-            // a conexão de camada oculta para saída é indexada por inputCount * hiddenNeuronsCount + j * outputCount + i, onde j percorre os neurônios ocultos e i o neurônio de saída atual
-            let indice = inputCount * hiddenNeuronsCount + j * outputCount + i;
+            let indice = j * (outputCount -1) + i;
             const hiddenConnection = MlpModel.hiddenToOutput[indice];
-            net += hiddenConnection.weight * connection.net; //usando o net calculado da camada oculta como entrada para a camada de saída
+            net += hiddenConnection.weight * mlpHiddenInformation.net[j];
         }
-        connection.net = net;
+        updateNetOutputInformation(mlpOutputInformation, i, net);
     }
 }
 
