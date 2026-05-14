@@ -6,6 +6,8 @@ const emptyCsv = {
     name: '',
     headers: [],
     rows: [],
+    results: [],
+    resultHeader: '',
     error: '',
 };
 
@@ -38,17 +40,25 @@ function parseCsvLine(line) {
 function parseCsv(text) {
     const lines = text
         .replace(/^\uFEFF/, '')
-        .split(/\r?\n/)
+        .split(/\r\n|\n|\r/)
         .filter((line) => line.trim().length > 0);
 
     if (lines.length === 0) {
-        return { headers: [], rows: [] };
+        throw new Error('CSV vazio.');
     }
 
-    const headers = parseCsvLine(lines[0]);
-    const rows = lines.slice(1).map(parseCsvLine);
+    const allHeaders = parseCsvLine(lines[0]);
+    const resultHeader = allHeaders.at(-1) ?? '';
+    const headers = allHeaders.slice(0, -1);
+    const parsedRows = lines.slice(1).map(parseCsvLine);
+    const rows = parsedRows.map((row) => row.slice(0, -1));
+    const results = parsedRows.map((row) => row.at(-1) ?? '');
 
-    return { headers, rows };
+    return { headers, rows, results, resultHeader };
+}
+
+function getUniqueResults(results) {
+    return [...new Set(results.filter((result) => result !== undefined && result !== ''))];
 }
 
 function App() {
@@ -58,6 +68,7 @@ function App() {
     const [singleCsv, setSingleCsv] = useState(emptyCsv);
     const [numberOfHiddenNeurons, setNumberOfHiddenNeurons] = useState(0);
     const [numberOfOutputs, setNumberOfOutputs] = useState(0);
+    const [trainingUniqueResults, setTrainingUniqueResults] = useState([]);
     const [config, setConfig] = useState({
         hiddenNeurons: '',
         maxEpochs: '',
@@ -85,7 +96,7 @@ function App() {
     const [isNotificationHovered, setIsNotificationHovered] = useState(false);
     const activeCsv = mode === 'single' ? singleCsv : trainCsv;
     const testRows = mode === 'single' ? 0 : testCsv.rows.length;
-    const inputCount = activeCsv.headers.length > 0 ? Math.max(activeCsv.headers.length - 1, 0) : 0;
+    const inputCount = activeCsv.headers.length;
 
     // log para desenvolvimento: exibe o conteúdo do CSV no console ao carregar
     React.useEffect(() => {
@@ -101,7 +112,10 @@ function App() {
         if (config.hiddenNeurons || config.maxEpochs || config.errorThreshold || config.learningRate || config.activationFunction) {
             console.log('Configuração:', config);
         }
-    }, [trainCsv, testCsv, singleCsv, config]);
+        if (trainingUniqueResults.length > 0) {
+            console.log('Resultados únicos do treinamento:', trainingUniqueResults);
+        }
+    }, [trainCsv, testCsv, singleCsv, config, trainingUniqueResults]);
 
     React.useEffect(() => {
         console.log('Pesos gerados:', weights);
@@ -123,41 +137,50 @@ function App() {
         return () => window.clearTimeout(timeoutId);
     }, [notification, isNotificationHovered]);
 
-    function readCsvFile(file, setter) {
+    async function readCsvFile(file, setter, shouldStoreTrainingResults = false) {
         if (!file) {
             setter(emptyCsv);
+            if (shouldStoreTrainingResults) {
+                setTrainingUniqueResults([]);
+            }
             return;
         }
 
-        const reader = new FileReader();
+        try {
+            const text = await file.text();
+            console.log('CSV lido bruto:', {
+                name: file.name,
+                size: file.size,
+                textLength: text.length,
+                firstLine: text.split(/\r\n|\n|\r/)[0] ?? '',
+            });
 
-        reader.onload = () => {
-            try {
-                const parsed = parseCsv(String(reader.result ?? ''));
-                setter({
-                    name: file.name,
-                    headers: parsed.headers,
-                    rows: parsed.rows,
-                    error: '',
-                });
-            } catch {
-                setter({
-                    ...emptyCsv,
-                    name: file.name,
-                    error: 'Não foi possível ler o CSV selecionado.',
-                });
+            const parsed = parseCsv(text);
+            setter({
+                name: file.name,
+                headers: parsed.headers,
+                rows: parsed.rows,
+                results: parsed.results,
+                resultHeader: parsed.resultHeader,
+                error: '',
+            });
+            if (shouldStoreTrainingResults) {
+                const uniqueTrainingResults = getUniqueResults(parsed.results);
+                setTrainingUniqueResults(uniqueTrainingResults);
+                setNumberOfOutputs(uniqueTrainingResults.length);
+                console.log('Classes únicas do treinamento:', uniqueTrainingResults);
             }
-        };
-
-        reader.onerror = () => {
+        } catch (error) {
+            console.error('Falha ao ler CSV:', error);
             setter({
                 ...emptyCsv,
                 name: file.name,
-                error: 'Falha ao carregar o arquivo no navegador.',
+                error: 'Não foi possível ler o CSV selecionado.',
             });
-        };
-
-        reader.readAsText(file);
+            if (shouldStoreTrainingResults) {
+                setTrainingUniqueResults([]);
+            }
+        }
     }
 
     function handleHiddenNeuronsRecommendation() {
@@ -171,9 +194,8 @@ function App() {
             return;
         }
 
-        const numberOfInputs = Math.max(csv.headers.length - 1, 0);
-        const outputColumnIndex = csv.headers.length - 1;
-        const numberOfOutputs = new Set(csv.rows.map((row) => row[outputColumnIndex]).filter((value) => value !== undefined && value !== '')).size;
+        const numberOfInputs = csv.headers.length;
+        const numberOfOutputs = trainingUniqueResults.length || getUniqueResults(csv.results).length;
         const hiddenNeurons = recomendationNumberHiddenNeurons({
             numberOfInputs,
             numberOfOutputs,
@@ -192,13 +214,12 @@ function App() {
 
     function handleRandomModelTest() {
         const csv = mode === 'single' ? singleCsv : trainCsv;
-        const numberOfInputs = csv.headers.length > 0 ? Math.max(csv.headers.length - 1, 1) : 3;
-        const outputColumnIndex = csv.headers.length - 1;
-        const numberOfOutputsFromCsv = new Set(csv.rows.map((row) => row[outputColumnIndex]).filter((value) => value !== undefined && value !== '')).size;
+        const numberOfInputs = csv.headers.length > 0 ? csv.headers.length : 3;
+        const numberOfOutputsFromCsv = trainingUniqueResults.length || getUniqueResults(csv.results).length;
         const numberOfOutputs = numberOfOutputsFromCsv || 2;
         const hiddenNeuronsCount = Number.parseInt(config.hiddenNeurons, 10) || 2;
         const randomWeights = generateRandomWeights(numberOfInputs, hiddenNeuronsCount, numberOfOutputs);
-        const { MLPWeights, MlpInformation } = buildMlpWeights(numberOfInputs, hiddenNeuronsCount, numberOfOutputs, randomWeights);
+        const { MLPWeights, MlpInformation } = buildMlpWeights(numberOfInputs, hiddenNeuronsCount, numberOfOutputs, randomWeights, trainingUniqueResults);
 
         setWeights(randomWeights);
         setMlpHiddenInformation(MlpInformation.hidden);
@@ -212,6 +233,58 @@ function App() {
                 `${hiddenNeuronsCount} neurônios ocultos`,
                 `${numberOfOutputs} saídas`,
                 `${randomWeights.length} pesos aleatórios`,
+            ],
+        });
+    }
+
+    function handlePrepareTrainingLayout() {
+        const csv = mode === 'single' ? singleCsv : trainCsv;
+
+        if (csv.results.length === 0) {
+            setNotification({
+                title: 'CSV necessário',
+                description: 'Carregue uma base de treino antes de preparar a etapa de treinamento.',
+            });
+            return;
+        }
+
+        const uniqueTrainingResults = getUniqueResults(csv.results);
+        setTrainingUniqueResults(uniqueTrainingResults);
+        setNumberOfOutputs(uniqueTrainingResults.length);
+        setNotification({
+            title: 'Treinamento preparado',
+            description: 'As classes únicas da base de treino foram armazenadas no estado da etapa de treinamento.',
+            details: [`${uniqueTrainingResults.length} classes únicas`, `${csv.rows.length} linhas de treino`],
+        });
+        console.log('Classes únicas do treinamento:', uniqueTrainingResults);
+    }
+
+    function handlePredictTest() {
+        if (weights.length === 0 || MlpModel.inputToHidden.length === 0) {
+            setNotification({
+                title: 'Modelo necessário',
+                description: 'Gere pesos aleatórios antes de testar o predict.',
+            });
+            return;
+        }
+
+        const lineInputs = Array.from({ length: inputCount || 3 }, () => Number(Math.random().toFixed(4)));
+        const predictionResult = predict(MlpHiddenInformation, MlpOutputInformation, MlpModel, lineInputs);
+
+        setMlpHiddenInformation(predictionResult.hidden);
+        setMlpOutputInformation(predictionResult.output);
+        console.log('Teste predict:', {
+            lineInputs,
+            MlpModel,
+            result: predictionResult,
+        });
+        setNotification({
+            title: 'Predict testado',
+            description: 'O resultado do predict foi enviado para o console.',
+            details: [
+                `${lineInputs.length} entradas usadas`,
+                `${predictionResult.hidden.net.length} nets ocultos`,
+                `${predictionResult.output.net.length} nets de saída`,
             ],
         });
     }
@@ -241,12 +314,12 @@ function App() {
 
                     {mode === 'separate' ? (
                         <div className="stack">
-                            <FileInput label="CSV de treino" csv={trainCsv} onFile={(file) => readCsvFile(file, setTrainCsv)} />
+                            <FileInput label="CSV de treino" csv={trainCsv} onFile={(file) => readCsvFile(file, setTrainCsv, true)} />
                             <FileInput label="CSV de teste" csv={testCsv} onFile={(file) => readCsvFile(file, setTestCsv)} />
                         </div>
                     ) : (
                         <div className="stack">
-                            <FileInput label="CSV completo" csv={singleCsv} onFile={(file) => readCsvFile(file, setSingleCsv)} />
+                            <FileInput label="CSV completo" csv={singleCsv} onFile={(file) => readCsvFile(file, setSingleCsv, true)} />
                             <div className="notice">A divisão em treino/teste não foi implementada.</div>
                         </div>
                     )}
@@ -313,7 +386,7 @@ function App() {
                     </label>
 
                     <div className="button-row">
-                        <button className="primary" type="button">
+                        <button className="primary" type="button" onClick={handlePrepareTrainingLayout}>
                             Preparar layout
                         </button>
                         <button
@@ -357,6 +430,9 @@ function App() {
                             <button className="soft-action" type="button" onClick={handleRandomModelTest}>
                                 Testar pesos aleatórios
                             </button>
+                            <button className="soft-action" type="button" onClick={handlePredictTest}>
+                                Testar predict
+                            </button>
                         </div>
                         <div className="network">
                             <Layer title="Entrada" labels={['X1', 'X2', 'X3', '...']} />
@@ -369,7 +445,7 @@ function App() {
                     </section>
 
                     <div className="grid two">
-                        <PlaceholderPanel title="Treinamento" lines={['Histórico de épocas', 'Média de erro', 'Estado de platô', 'Ações de continuidade']} />
+                        <TrainingPanel uniqueResults={trainingUniqueResults} />
                         <PlaceholderPanel
                             title="Matriz de Confusão"
                             lines={['Classes esperadas', 'Classes obtidas', 'Acertos na diagonal', 'Erros fora da diagonal']}
@@ -456,7 +532,8 @@ function CsvPanel({ title, csv }) {
             {hasData ? (
                 <>
                     <div className="metrics">
-                        <span>{csv.headers.length} colunas</span>
+                        <span>{csv.headers.length} entradas</span>
+                        <span>{csv.resultHeader || 'resultado'}</span>
                         <span>{csv.rows.length} linhas lidas</span>
                     </div>
                     <div className="table-wrap">
@@ -466,6 +543,7 @@ function CsvPanel({ title, csv }) {
                                     {csv.headers.map((header, index) => (
                                         <th key={`${header}-${index}`}>{header || `Coluna ${index + 1}`}</th>
                                     ))}
+                                    <th>{csv.resultHeader || 'Resultado'}</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -474,6 +552,7 @@ function CsvPanel({ title, csv }) {
                                         {csv.headers.map((_, cellIndex) => (
                                             <td key={cellIndex}>{row[cellIndex] ?? ''}</td>
                                         ))}
+                                        <td className="result-cell">{csv.results[rowIndex] ?? ''}</td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -542,6 +621,31 @@ function WeightList({ title, items }) {
     );
 }
 
+function TrainingPanel({ uniqueResults }) {
+    return (
+        <section className="panel placeholder">
+            <SectionTitle title="Treinamento" subtitle="Estado visual da preparação" />
+            <div className="training-state">
+                <span>Classes únicas armazenadas</span>
+                {uniqueResults.length > 0 ? (
+                    <div className="result-tags training-tags">
+                        {uniqueResults.map((result) => (
+                            <span key={result}>{result}</span>
+                        ))}
+                    </div>
+                ) : (
+                    <p>Nenhuma classe armazenada ainda.</p>
+                )}
+            </div>
+            <ul>
+                {['Histórico de épocas', 'Média de erro', 'Estado de platô', 'Ações de continuidade'].map((line) => (
+                    <li key={line}>{line}</li>
+                ))}
+            </ul>
+        </section>
+    );
+}
+
 function PlaceholderPanel({ title, lines }) {
     return (
         <section className="panel placeholder">
@@ -564,7 +668,7 @@ function recomendationNumberHiddenNeurons({ numberOfInputs, numberOfOutputs }) {
     return hiddenNeurons;
 }
 
-function buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, weights) {
+function buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, weights, trainingUniqueResults) {
     if (weights.length !== inputCount * hiddenNeuronsCount + hiddenNeuronsCount * outputCount) {
         throw new Error('O número de pesos fornecidos não corresponde à arquitetura da rede.');
     }
@@ -603,6 +707,7 @@ function buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, weights) {
             MLPWeights.hiddenToOutput.push({
                 from: `Hidden ${i + 1}`,
                 to: `Output ${j + 1}`,
+                classe: trainingUniqueResults[j] || '',
                 weight: weightValue,
             });
             console.log(`Peso da conexão entre neurônio oculto ${i} e saída ${j}: ${weightValue}`);
@@ -645,49 +750,53 @@ function generateRandomWeights(inputCount, hiddenNeuronsCount, outputCount) {
     return randomWeights;
 }
 
-function updateNetHiddenInformation(mlpHiddenInformation, neuronIndex, netValue) {
-    const updatedNet = [...mlpHiddenInformation.net];
-    updatedNet[neuronIndex] = netValue;
-    setMlpHiddenInformation({
-        ...mlpHiddenInformation,
-        net: updatedNet,
-    });
-}
-
-function updateNetOutputInformation(mlpOutputInformation, neuronIndex, netValue) {
-    const updatedNet = [...mlpOutputInformation.net];
-    updatedNet[neuronIndex] = netValue;
-    setMlpOutputInformation({
-        ...mlpOutputInformation,
-        net: updatedNet,
-    });
-}
-
 function predict(mlpHiddenInformation, mlpOutputInformation, MlpModel, lineInputs) {
     const hiddenNeuronsCount = mlpHiddenInformation.net.length;
-    const inputCount = lineInputs.net.length - 1;
-    const outputCount = mlpOutputInformation.net.length - 1;
-    //calculo do net da camada camada de entrada para camada oculta
+    const inputCount = lineInputs.length;
+    const outputCount = mlpOutputInformation.net.length;
+    const hiddenNet = [...mlpHiddenInformation.net];
+    const hiddenI = [...mlpHiddenInformation.i];
+    const erro = [...mlpHiddenInformation.erro];
+    const outputNet = [...mlpOutputInformation.net];
+    const outputI = [...mlpOutputInformation.i];
+    const outputErro = [...mlpOutputInformation.erro];
+
+    // Cálculo do net da camada de entrada para a camada oculta.
     for (let i = 0; i < hiddenNeuronsCount; i++) {
         let net = 0;
         for (let j = 0; j < inputCount; j++) {
-            //a conexão de entrada para camada oculta é indexada por j * outputCount + i, onde j percorre as entradas e i o neurônio oculto atual
-            let indice = j * (hiddenNeuronsCount - 1) + i;
+            const indice = j * (hiddenNeuronsCount - 1) + i;
             const inputConnection = MlpModel.inputToHidden[indice];
-            net += inputConnection.weight * lineInputs[j];
+            net += (inputConnection?.weight ?? 0) * lineInputs[j];
         }
-        updateNetHiddenInformation(mlpHiddenInformation, i, net);
+        hiddenNet[i] = net;
+        hiddenI[i] = net / 2;
     }
 
+    // Cálculo do net da camada oculta para a camada de saída.
     for (let i = 0; i < outputCount; i++) {
-        net = 0;
+        let net = 0;
         for (let j = 0; j < hiddenNeuronsCount; j++) {
-            let indice = j * (outputCount -1) + i;
+            const indice = j * (outputCount - 1) + i;
             const hiddenConnection = MlpModel.hiddenToOutput[indice];
-            net += hiddenConnection.weight * mlpHiddenInformation.net[j];
+            net += (hiddenConnection?.weight ?? 0) * hiddenNet[j];
         }
-        updateNetOutputInformation(mlpOutputInformation, i, net);
+        outputNet[i] = net;
+        outputI[i] = net / 2;
     }
+
+    //Calculo do erro
+
+    return {
+        hidden: {
+            ...mlpHiddenInformation,
+            net: hiddenNet,
+        },
+        output: {
+            ...mlpOutputInformation,
+            net: outputNet,
+        },
+    };
 }
 
 createRoot(document.getElementById('root')).render(<App />);
