@@ -76,18 +76,27 @@ function App() {
         learningRate: '',
         activationFunction: '',
     });
-    const [MlpHiddenInformation, setMlpHiddenInformation] = useState({
+    const [mlp, setMlp] = useState({
+        // numberOfHiddenNeurons
+        // numberOfOutputs
+        // mlpHiddenInformation
+        // mlpOutputInformation
+        // mlpModel
+        avgError: 0,
+    });
+
+    const [mlpHiddenInformation, setMlpHiddenInformation] = useState({
         net: [],
         erro: [],
         i: [],
     });
-    const [MlpOutputInformation, setMlpOutputInformation] = useState({
+    const [mlpOutputInformation, setMlpOutputInformation] = useState({
         net: [],
         erro: [],
         i: [],
     });
 
-    const [MlpModel, setMlpModel] = useState({
+    const [mlpModel, setMlpModel] = useState({
         inputToHidden: [],
         hiddenToOutput: [],
     });
@@ -122,8 +131,8 @@ function App() {
     }, [weights]);
 
     React.useEffect(() => {
-        console.log('Modelo MLP atualizado:', MlpModel);
-    }, [MlpModel]);
+        console.log('Modelo MLP atualizado:', mlpModel);
+    }, [mlpModel]);
 
     React.useEffect(() => {
         if (!notification || isNotificationHovered) {
@@ -260,7 +269,7 @@ function App() {
     }
 
     function handlePredictTest() {
-        if (weights.length === 0 || MlpModel.inputToHidden.length === 0) {
+        if (weights.length === 0 || mlpModel.inputToHidden.length === 0) {
             setNotification({
                 title: 'Modelo necessário',
                 description: 'Gere pesos aleatórios antes de testar o predict.',
@@ -269,7 +278,7 @@ function App() {
         }
 
         const lineInputs = Array.from({ length: inputCount || 3 }, () => Number(Math.random().toFixed(4)));
-        const predictionResult = predict(MlpHiddenInformation, MlpOutputInformation, MlpModel, lineInputs);
+        const predictionResult = predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInputs);
 
         setMlpHiddenInformation(predictionResult.hidden);
         setMlpOutputInformation(predictionResult.output);
@@ -441,7 +450,7 @@ function App() {
                             <div className="connector" />
                             <Layer title="Saída" labels={['C1', 'C2', 'C3', '...']} />
                         </div>
-                        <ModelPreview model={MlpModel} weights={weights} />
+                        <ModelPreview model={mlpModel} weights={weights} />
                     </section>
 
                     <div className="grid two">
@@ -734,7 +743,7 @@ function buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, weights, t
     }
 
     for (let i = 0; i < outputCount; i += 1) {
-        MlpInformation.output.classe.push(trainingUniqueResults[i] || '')
+        MlpInformation.output.classe.push(trainingUniqueResults[i] || '');
         MlpInformation.output.net.push(0);
         MlpInformation.output.erro.push(0);
         MlpInformation.output.i.push(0);
@@ -752,7 +761,7 @@ function generateRandomWeights(inputCount, hiddenNeuronsCount, outputCount) {
     return randomWeights;
 }
 
-function predict(mlpHiddenInformation, mlpOutputInformation, MlpModel, lineInputs) {
+function predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInputs, config, avgError) {
     const hiddenNeuronsCount = mlpHiddenInformation.net.length;
     const inputCount = lineInputs.length;
     const outputCount = mlpOutputInformation.net.length;
@@ -763,13 +772,14 @@ function predict(mlpHiddenInformation, mlpOutputInformation, MlpModel, lineInput
     const outputI = [...mlpOutputInformation.i];
     const outputErro = [...mlpOutputInformation.erro];
     const outputClasse = [...mlpOutputInformation.classe];
-    const classeValue = lineInputs.split(",").pop().trim();
+
+    const classeValue = lineInputs.split(',').pop().trim();
     // Cálculo do net da camada de entrada para a camada oculta.
     for (let i = 0; i < hiddenNeuronsCount; i++) {
         let net = 0;
         for (let j = 0; j < inputCount; j++) {
             const indice = j * (hiddenNeuronsCount - 1) + i;
-            const inputConnection = MlpModel.inputToHidden[indice];
+            const inputConnection = mlpModel.inputToHidden[indice];
             net += (inputConnection?.weight ?? 0) * lineInputs[j];
         }
         hiddenNet[i] = net;
@@ -781,41 +791,50 @@ function predict(mlpHiddenInformation, mlpOutputInformation, MlpModel, lineInput
         let net = 0;
         for (let j = 0; j < hiddenNeuronsCount; j++) {
             const indice = j * (outputCount - 1) + i;
-            const hiddenConnection = MlpModel.hiddenToOutput[indice];
+            const hiddenConnection = mlpModel.hiddenToOutput[indice];
             net += (hiddenConnection?.weight ?? 0) * hiddenNet[j];
         }
         outputNet[i] = net;
         outputI[i] = net / 2;
 
         //Calculo do erro
-        let auxI = 1 - net / 2
+        let auxI = 1 - net / 2;
         if (outputClasse[i] == classeValue) {
-            outputErro[i] = (1 - auxI) * 0.5
-        }
-        else {
-            outputErro[i] = auxI * 0.5
+            outputErro[i] = (1 - auxI) * 0.5;
+        } else {
+            outputErro[i] = auxI * 0.5;
         }
     }
-    
-    // //erro da rede
-    // let erroRede = 0
-    // for (let i = 0; i < outputCount; i++) {
-    //     auxI = outputErro[i] / 2
-    //     erroRede += Math.pow((auxI),2)
-    // }
-    // erroRede *= 0.5
 
+    //atualizar os pesos da camada ocuta para a camada de saída utilizando o erro calculado
+    for (let i = 0; i < outputCount; i++) {
+        for (let j = 0; j < hiddenNeuronsCount; j++) {
+            const indice = j * (outputCount - 1) + i;
+            const hiddenConnection = mlpModel.hiddenToOutput[indice];
 
-    return {
-        hidden: {
-            ...mlpHiddenInformation,
-            net: hiddenNet,
-        },
-        output: {
-            ...mlpOutputInformation,
-            net: outputNet,
-        },
-    };
+            const newWeight = hiddenConnection.weight + config.learningRate * outputErro[i] * hiddenI[j];
+            mlpModel.hiddenToOutput[indice].weight = newWeight;
+        }
+    }
+
+    //atualizar os pesos da camada entrada para a camada oculta utilizando o erro calculado
+    for (let i = 0; i < hiddenNeuronsCount; i++) {
+        for (let j = 0; j < inputCount; j++) {
+            const indice = j * (hiddenNeuronsCount - 1) + i;
+            const inputConnection = mlpModel.inputToHidden[indice];
+            const newWeight = inputConnection.weight + config.learningRate * outputErro[i];
+        }
+    }
+
+    //erro da rede
+    let erroRede = 0;
+    for (let i = 0; i < outputCount; i++) {
+        auxI = outputErro[i] / 2;
+        erroRede += Math.pow(auxI, 2);
+    }
+    erroRede *= 0.5;
+
+    avgError = (erroRede + avgError) / 2;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
