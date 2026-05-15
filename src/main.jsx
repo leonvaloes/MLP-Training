@@ -721,6 +721,7 @@ function buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, weights, t
             i: [],
         },
         output: {
+            classe: [],
             net: [],
             erro: [],
             i: [],
@@ -733,6 +734,7 @@ function buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, weights, t
     }
 
     for (let i = 0; i < outputCount; i += 1) {
+        MlpInformation.output.classe.push(trainingUniqueResults[i] || '')
         MlpInformation.output.net.push(0);
         MlpInformation.output.erro.push(0);
         MlpInformation.output.i.push(0);
@@ -756,11 +758,12 @@ function predict(mlpHiddenInformation, mlpOutputInformation, MlpModel, lineInput
     const outputCount = mlpOutputInformation.net.length;
     const hiddenNet = [...mlpHiddenInformation.net];
     const hiddenI = [...mlpHiddenInformation.i];
-    const erro = [...mlpHiddenInformation.erro];
+
     const outputNet = [...mlpOutputInformation.net];
     const outputI = [...mlpOutputInformation.i];
     const outputErro = [...mlpOutputInformation.erro];
-
+    const outputClasse = [...mlpOutputInformation.classe];
+    const classeValue = lineInputs.split(",").pop().trim();
     // Cálculo do net da camada de entrada para a camada oculta.
     for (let i = 0; i < hiddenNeuronsCount; i++) {
         let net = 0;
@@ -783,9 +786,25 @@ function predict(mlpHiddenInformation, mlpOutputInformation, MlpModel, lineInput
         }
         outputNet[i] = net;
         outputI[i] = net / 2;
-    }
 
-    //Calculo do erro
+        //Calculo do erro
+        let auxI = 1 - net / 2
+        if (outputClasse[i] == classeValue) {
+            outputErro[i] = (1 - auxI) * 0.5
+        }
+        else {
+            outputErro[i] = auxI * 0.5
+        }
+    }
+    
+    // //erro da rede
+    // let erroRede = 0
+    // for (let i = 0; i < outputCount; i++) {
+    //     auxI = outputErro[i] / 2
+    //     erroRede += Math.pow((auxI),2)
+    // }
+    // erroRede *= 0.5
+
 
     return {
         hidden: {
