@@ -530,6 +530,87 @@ h1 {
   margin: 0;
 }
 
+.training-metrics {
+  display: grid;
+  gap: 6px 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.training-metrics strong,
+.training-metrics small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.training-metrics strong {
+  color: #111827;
+  font-size: 1rem;
+}
+
+.training-metrics small {
+  color: #647386;
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.history-list {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+}
+
+.history-list li {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #dce5ef;
+  border-radius: 7px;
+  color: #405064;
+  display: flex;
+  font-size: 0.86rem;
+  justify-content: space-between;
+  padding: 9px 10px;
+}
+
+.history-list strong {
+  color: #111827;
+}
+
+.confusion-wrap {
+  max-height: 360px;
+}
+
+.confusion-table th:first-child {
+  left: 0;
+  position: sticky;
+  z-index: 2;
+}
+
+.confusion-table tbody th {
+  background: #f4f7fb;
+  color: #2f3b4e;
+  font-weight: 800;
+}
+
+.confusion-table td {
+  font-weight: 800;
+  text-align: center;
+}
+
+.confusion-hit {
+  background: #edfdf7;
+  color: #126447;
+}
+
+.confusion-miss {
+  background: #fff7f3;
+  color: #9a3412;
+}
+
 .table-wrap {
   border: 1px solid var(--border);
   border-radius: 7px;

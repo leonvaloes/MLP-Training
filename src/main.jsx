@@ -121,6 +121,23 @@ function App() {
         // mlpModel
         avgError: 0,
     });
+    const [trainingState, setTrainingState] = useState({
+        status: 'idle',
+        epochs: 0,
+        avgError: 0,
+        history: [],
+        plateau: false,
+        stoppedBy: '',
+    });
+    const [evaluationState, setEvaluationState] = useState({
+        status: 'idle',
+        total: 0,
+        correct: 0,
+        accuracy: 0,
+        labels: [],
+        matrix: [],
+        predictions: [],
+    });
     const [predictTest, setPredictTest] = useState({
         lineIndex: 0,
         inputs: [],
@@ -335,6 +352,95 @@ function App() {
         console.log('Classes únicas do treinamento:', uniqueTrainingResults);
     }
 
+    function handleTrainMlp() {
+        const csv = mode === 'single' ? singleCsv : trainCsv;
+        const uniqueTrainingResults = trainingUniqueResults.length > 0 ? trainingUniqueResults : getUniqueResults(csv.results);
+        const hiddenNeuronsCount = Number.parseInt(config.hiddenNeurons, 10);
+        const maxEpochs = Number.parseInt(config.maxEpochs, 10);
+        const errorThreshold = Number(config.errorThreshold);
+        const learningRate = Number(config.learningRate);
+
+        if (csv.rows.length === 0 || csv.results.length === 0) {
+            setNotification({
+                title: 'CSV necessario',
+                description: 'Carregue a base de treino antes de iniciar o treinamento.',
+            });
+            return;
+        }
+
+        if (!hiddenNeuronsCount || hiddenNeuronsCount <= 0 || !maxEpochs || maxEpochs <= 0) {
+            setNotification({
+                title: 'Configuracao incompleta',
+                description: 'Informe neuronios ocultos e numero maximo de epocas maiores que zero.',
+            });
+            return;
+        }
+
+        if (Number.isNaN(errorThreshold) || errorThreshold < 0) {
+            setNotification({
+                title: 'Limiar invalido',
+                description: 'Informe um limiar de erro maior ou igual a zero.',
+            });
+            return;
+        }
+
+        if (Number.isNaN(learningRate) || learningRate <= 0 || learningRate > 1) {
+            setNotification({
+                title: 'Taxa invalida',
+                description: 'A taxa de aprendizagem deve ser maior que 0 e menor ou igual a 1.',
+            });
+            return;
+        }
+
+        if (!config.activationFunction) {
+            setNotification({
+                title: 'Funcao necessaria',
+                description: 'Selecione Linear, Logistica ou Tangente hiperbolica.',
+            });
+            return;
+        }
+
+        const trainingResult = trainMlp({
+            rows: csv.rows,
+            results: csv.results,
+            uniqueResults: uniqueTrainingResults,
+            hiddenNeuronsCount,
+            maxEpochs,
+            errorThreshold,
+            config,
+        });
+
+        setTrainingUniqueResults(uniqueTrainingResults);
+        setNumberOfOutputs(uniqueTrainingResults.length);
+        setWeights(trainingResult.weights);
+        setMlpHiddenInformation(trainingResult.hidden);
+        setMlpOutputInformation(trainingResult.output);
+        setPreviousMlpModel(mlpModel.inputToHidden.length > 0 ? mlpModel : null);
+        setMlpModel(trainingResult.model);
+        setMlp((current) => ({
+            ...current,
+            avgError: trainingResult.avgError,
+        }));
+        setTrainingState({
+            status: 'trained',
+            epochs: trainingResult.epochs,
+            avgError: trainingResult.avgError,
+            history: trainingResult.history,
+            plateau: trainingResult.plateau,
+            stoppedBy: trainingResult.stoppedBy,
+        });
+        setNotification({
+            title: 'Treinamento concluido',
+            description: `Treinamento encerrado por ${trainingResult.stoppedBy}.`,
+            details: [
+                `${trainingResult.epochs} epocas`,
+                `erro medio ${trainingResult.avgError.toFixed(6)}`,
+                `${trainingResult.weights.length} pesos ajustados`,
+            ],
+        });
+        console.log('Treinamento MLP:', trainingResult);
+    }
+
     function handlePredictTest() {
         const csv = mode === 'single' ? singleCsv : trainCsv;
         const lineIndex = Number.parseInt(predictTest.lineIndex, 10) || 0;
@@ -396,6 +502,49 @@ function App() {
                 `${predictionResult.output.net.length} nets de saída`,
             ],
         });
+    }
+
+    function handleEvaluateTestSet() {
+        const csv = mode === 'single' ? singleCsv : testCsv;
+        const labels = trainingUniqueResults.length > 0 ? trainingUniqueResults : getUniqueResults(trainCsv.results);
+
+        if (mlpModel.inputToHidden.length === 0 || mlpOutputInformation.classe.length === 0) {
+            setNotification({
+                title: 'Modelo necessario',
+                description: 'Treine a MLP antes de avaliar a base de teste.',
+            });
+            return;
+        }
+
+        if (csv.rows.length === 0 || csv.results.length === 0) {
+            setNotification({
+                title: 'CSV de teste necessario',
+                description: 'Carregue uma base de teste para montar a matriz de confusao.',
+            });
+            return;
+        }
+
+        const evaluation = evaluateMlp({
+            rows: csv.rows,
+            results: csv.results,
+            labels,
+            model: mlpModel,
+            config,
+        });
+
+        setEvaluationState({
+            status: 'evaluated',
+            ...evaluation,
+        });
+        setNotification({
+            title: 'Teste avaliado',
+            description: 'A matriz de confusao foi calculada com a base de teste.',
+            details: [
+                `${evaluation.correct}/${evaluation.total} acertos`,
+                `${(evaluation.accuracy * 100).toFixed(2)}% de acuracia`,
+            ],
+        });
+        console.log('Avaliacao da base de teste:', evaluation);
     }
 
     return (
@@ -498,6 +647,9 @@ function App() {
                         <button className="primary" type="button" onClick={handlePrepareTrainingLayout}>
                             Preparar layout
                         </button>
+                        <button className="primary" type="button" onClick={handleTrainMlp}>
+                            Treinar MLP
+                        </button>
                         <button
                             className="ghost"
                             type="button"
@@ -542,6 +694,9 @@ function App() {
                             <button className="soft-action" type="button" onClick={handlePredictTest}>
                                 Testar predict
                             </button>
+                            <button className="soft-action" type="button" onClick={handleEvaluateTestSet}>
+                                Avaliar teste
+                            </button>
                         </div>
                         <div className="network">
                             <Layer title="Entrada" labels={['X1', 'X2', 'X3', '...']} />
@@ -555,11 +710,8 @@ function App() {
                     </section>
 
                     <div className="grid two">
-                        <TrainingPanel uniqueResults={trainingUniqueResults} />
-                        <PlaceholderPanel
-                            title="Matriz de Confusão"
-                            lines={['Classes esperadas', 'Classes obtidas', 'Acertos na diagonal', 'Erros fora da diagonal']}
-                        />
+                        <TrainingPanel uniqueResults={trainingUniqueResults} trainingState={trainingState} />
+                        <ConfusionMatrixPanel evaluationState={evaluationState} />
                     </div>
                 </section>
             </section>
@@ -770,7 +922,8 @@ function PredictTestPanel({ predictTest, setPredictTest, avgError }) {
     );
 }
 
-function TrainingPanel({ uniqueResults }) {
+function TrainingPanel({ uniqueResults, trainingState }) {
+    const lastHistory = trainingState.history.slice(-10).reverse();
     return (
         <section className="panel placeholder">
             <SectionTitle title="Treinamento" subtitle="Estado visual da preparação" />
@@ -786,11 +939,30 @@ function TrainingPanel({ uniqueResults }) {
                     <p>Nenhuma classe armazenada ainda.</p>
                 )}
             </div>
-            <ul>
-                {['Histórico de épocas', 'Média de erro', 'Estado de platô', 'Ações de continuidade'].map((line) => (
-                    <li key={line}>{line}</li>
-                ))}
-            </ul>
+            <div className="training-state">
+                <span>Resultado do treinamento</span>
+                <div className="training-metrics">
+                    <strong>{trainingState.epochs || 0}</strong>
+                    <small>epocas</small>
+                    <strong>{Number(trainingState.avgError || 0).toFixed(6)}</strong>
+                    <small>erro medio</small>
+                    <strong>{trainingState.stoppedBy || '-'}</strong>
+                    <small>parada</small>
+                </div>
+                {trainingState.plateau ? <p>Possivel plato identificado nas ultimas 10 epocas.</p> : null}
+            </div>
+            {lastHistory.length > 0 ? (
+                <ul className="history-list">
+                    {lastHistory.map((item) => (
+                        <li key={item.epoch}>
+                            <span>Epoca {item.epoch}</span>
+                            <strong>{item.avgError.toFixed(6)}</strong>
+                        </li>
+                    ))}
+                </ul>
+            ) : (
+                <div className="empty">Execute o treinamento para ver o historico de epocas.</div>
+            )}
         </section>
     );
 }
@@ -804,6 +976,52 @@ function PlaceholderPanel({ title, lines }) {
                     <li key={line}>{line}</li>
                 ))}
             </ul>
+        </section>
+    );
+}
+
+function ConfusionMatrixPanel({ evaluationState }) {
+    const hasMatrix = evaluationState.matrix.length > 0;
+
+    return (
+        <section className="panel">
+            <SectionTitle title="Matriz de ConfusÃ£o" subtitle="Linhas: classe esperada. Colunas: classe obtida." />
+            <div className="metrics">
+                <span>{evaluationState.total || 0} exemplos</span>
+                <span>{evaluationState.correct || 0} acertos</span>
+                <span>{(evaluationState.accuracy * 100).toFixed(2)}% acuracia</span>
+            </div>
+            {hasMatrix ? (
+                <div className="table-wrap confusion-wrap">
+                    <table className="confusion-table">
+                        <thead>
+                            <tr>
+                                <th>Esperada \ Obtida</th>
+                                {evaluationState.labels.map((label) => (
+                                    <th key={label}>{label}</th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {evaluationState.labels.map((expectedLabel, rowIndex) => (
+                                <tr key={expectedLabel}>
+                                    <th>{expectedLabel}</th>
+                                    {evaluationState.labels.map((predictedLabel, columnIndex) => (
+                                        <td
+                                            className={rowIndex === columnIndex ? 'confusion-hit' : 'confusion-miss'}
+                                            key={predictedLabel}
+                                        >
+                                            {evaluationState.matrix[rowIndex]?.[columnIndex] ?? 0}
+                                        </td>
+                                    ))}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            ) : (
+                <div className="empty">Treine a rede e clique em Avaliar teste para gerar a matriz.</div>
+            )}
         </section>
     );
 }
@@ -901,6 +1119,184 @@ function generateRandomWeights(inputCount, hiddenNeuronsCount, outputCount) {
     return randomWeights;
 }
 
+function getActivationFunction(name) {
+    const normalizedName = String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+    if (normalizedName.includes('logistica')) {
+        return {
+            run: (net) => 1 / (1 + Math.exp(-net)),
+            derivative: (output) => output * (1 - output),
+        };
+    }
+
+    if (normalizedName.includes('tangente')) {
+        return {
+            run: (net) => Math.tanh(net),
+            derivative: (output) => 1 - output ** 2,
+        };
+    }
+
+    return {
+        run: (net) => net / 10,
+        derivative: () => 1 / 10,
+    };
+}
+
+function extractModelWeights(model) {
+    return [
+        ...model.inputToHidden.map((connection) => connection.weight),
+        ...model.hiddenToOutput.map((connection) => connection.weight),
+    ];
+}
+
+function standardDeviation(values) {
+    if (values.length === 0) {
+        return 0;
+    }
+
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+
+    return Math.sqrt(variance);
+}
+
+function hasTrainingPlateau(history) {
+    if (history.length < 10) {
+        return false;
+    }
+
+    const lastErrors = history.slice(-10).map((item) => item.avgError);
+    const deviation = standardDeviation(lastErrors);
+
+    return deviation >= 0 && deviation <= 0.00001;
+}
+
+function trainMlp({ rows, results, uniqueResults, hiddenNeuronsCount, maxEpochs, errorThreshold, config }) {
+    const inputCount = rows[0]?.length ?? 0;
+    const outputCount = uniqueResults.length;
+    const initialWeights = generateRandomWeights(inputCount, hiddenNeuronsCount, outputCount);
+    const { MLPWeights, MlpInformation } = buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, initialWeights, uniqueResults);
+
+    let currentModel = MLPWeights;
+    let currentHidden = MlpInformation.hidden;
+    let currentOutput = MlpInformation.output;
+    let avgError = Number.POSITIVE_INFINITY;
+    let stoppedBy = 'maximo de epocas';
+    const history = [];
+
+    for (let epoch = 1; epoch <= maxEpochs; epoch += 1) {
+        let epochError = 0;
+
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+            const predictionResult = predict(currentHidden, currentOutput, currentModel, rows[rowIndex], results[rowIndex], config, 0);
+
+            currentHidden = predictionResult.hidden;
+            currentOutput = predictionResult.output;
+            currentModel = predictionResult.model;
+            epochError += predictionResult.erroRede;
+        }
+
+        avgError = epochError / rows.length;
+        history.push({ epoch, avgError });
+
+        if (avgError <= errorThreshold) {
+            stoppedBy = 'limiar de erro';
+            break;
+        }
+    }
+
+    return {
+        model: currentModel,
+        hidden: currentHidden,
+        output: currentOutput,
+        weights: extractModelWeights(currentModel),
+        avgError,
+        epochs: history.at(-1)?.epoch ?? 0,
+        history,
+        plateau: hasTrainingPlateau(history),
+        stoppedBy,
+    };
+}
+
+function runMlp(model, lineInputs, config) {
+    const hiddenNeuronsCount = model.inputToHidden.reduce((max, connection) => {
+        const hiddenIndex = Number.parseInt(connection.to.replace(/\D/g, ''), 10);
+        return Math.max(max, hiddenIndex);
+    }, 0);
+    const outputLabels = [...new Set(model.hiddenToOutput.map((connection) => connection.classe).filter(Boolean))];
+    const outputCount = outputLabels.length;
+    const activation = getActivationFunction(config.activationFunction);
+    const hiddenI = Array(hiddenNeuronsCount).fill(0);
+    const outputI = Array(outputCount).fill(0);
+
+    for (let hiddenIndex = 0; hiddenIndex < hiddenNeuronsCount; hiddenIndex += 1) {
+        let net = 0;
+
+        for (let inputIndex = 0; inputIndex < lineInputs.length; inputIndex += 1) {
+            const weightIndex = inputIndex * hiddenNeuronsCount + hiddenIndex;
+            const connection = model.inputToHidden[weightIndex];
+
+            net += (connection?.weight ?? 0) * lineInputs[inputIndex];
+        }
+
+        hiddenI[hiddenIndex] = activation.run(net);
+    }
+
+    for (let outputIndex = 0; outputIndex < outputCount; outputIndex += 1) {
+        let net = 0;
+
+        for (let hiddenIndex = 0; hiddenIndex < hiddenNeuronsCount; hiddenIndex += 1) {
+            const weightIndex = hiddenIndex * outputCount + outputIndex;
+            const connection = model.hiddenToOutput[weightIndex];
+
+            net += (connection?.weight ?? 0) * hiddenI[hiddenIndex];
+        }
+
+        outputI[outputIndex] = activation.run(net);
+    }
+
+    const bestOutputIndex = outputI.reduce((bestIndex, value, index) => (
+        value > outputI[bestIndex] ? index : bestIndex
+    ), 0);
+
+    return {
+        outputs: outputI,
+        predictedLabel: outputLabels[bestOutputIndex] ?? '',
+    };
+}
+
+function evaluateMlp({ rows, results, labels, model, config }) {
+    const matrix = labels.map(() => labels.map(() => 0));
+    const predictions = rows.map((row, rowIndex) => {
+        const expectedLabel = results[rowIndex];
+        const prediction = runMlp(model, row, config);
+        const expectedIndex = labels.indexOf(expectedLabel);
+        const predictedIndex = labels.indexOf(prediction.predictedLabel);
+
+        if (expectedIndex >= 0 && predictedIndex >= 0) {
+            matrix[expectedIndex][predictedIndex] += 1;
+        }
+
+        return {
+            expectedLabel,
+            predictedLabel: prediction.predictedLabel,
+            outputs: prediction.outputs,
+            correct: expectedLabel === prediction.predictedLabel,
+        };
+    });
+    const correct = predictions.filter((prediction) => prediction.correct).length;
+    const total = predictions.length;
+
+    return {
+        total,
+        correct,
+        accuracy: total > 0 ? correct / total : 0,
+        labels,
+        matrix,
+        predictions,
+    };
+}
+
 function predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInputs, expectedResult, config, avgError) {
     const hiddenNeuronsCount = mlpHiddenInformation.net.length;
     const inputCount = lineInputs.length;
@@ -921,7 +1317,7 @@ function predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInput
     };
 
     const learningRate = Number(config.learningRate) || 0.1;
-    const derivative = 0.5; // porque a função usada aqui é f(net) = net / 2
+    const activation = getActivationFunction(config.activationFunction);
 
     // 1. Calcula NET e I da camada oculta.
     for (let hiddenIndex = 0; hiddenIndex < hiddenNeuronsCount; hiddenIndex += 1) {
@@ -935,7 +1331,7 @@ function predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInput
         }
 
         hiddenNet[hiddenIndex] = net;
-        hiddenI[hiddenIndex] = net / 2;
+        hiddenI[hiddenIndex] = activation.run(net);
     }
 
     // 2. Calcula NET, I e erro da camada de saída.
@@ -950,10 +1346,10 @@ function predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInput
         }
 
         outputNet[outputIndex] = net;
-        outputI[outputIndex] = net / 2;
+        outputI[outputIndex] = activation.run(net);
 
         const desired = outputClasse[outputIndex] === expectedResult ? 1 : 0;
-        outputErro[outputIndex] = (desired - outputI[outputIndex]) * derivative;
+        outputErro[outputIndex] = (desired - outputI[outputIndex]) * activation.derivative(outputI[outputIndex]);
     }
 
     // 3. Salva os pesos antigos da camada oculta → saída.
@@ -973,7 +1369,7 @@ function predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInput
                 hiddenToOutputWeightsBeforeUpdate[weightIndex];
         }
 
-        hiddenErro[hiddenIndex] = sum * derivative;
+        hiddenErro[hiddenIndex] = sum * activation.derivative(hiddenI[hiddenIndex]);
     }
 
     // 5. Atualiza os pesos da camada oculta → saída.
