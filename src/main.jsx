@@ -103,6 +103,8 @@ function App() {
     const [trainCsv, setTrainCsv] = useState(emptyCsv);
     const [testCsv, setTestCsv] = useState(emptyCsv);
     const [singleCsv, setSingleCsv] = useState(emptyCsv);
+    const [singleCsvSource, setSingleCsvSource] = useState(null);
+    const [trainSplitPercent, setTrainSplitPercent] = useState(70);
     const [numberOfHiddenNeurons, setNumberOfHiddenNeurons] = useState(0);
     const [numberOfOutputs, setNumberOfOutputs] = useState(0);
     const [trainingUniqueResults, setTrainingUniqueResults] = useState([]);
@@ -142,6 +144,9 @@ function App() {
         lineIndex: 0,
         inputs: [],
         expectedResult: '',
+        predictedResult: '',
+        correct: null,
+        outputs: [],
         result: null,
         error: '',
     });
@@ -166,7 +171,7 @@ function App() {
     const [notification, setNotification] = useState(null);
     const [isNotificationHovered, setIsNotificationHovered] = useState(false);
     const activeCsv = mode === 'single' ? singleCsv : trainCsv;
-    const testRows = mode === 'single' ? 0 : testCsv.rows.length;
+    const testRows = testCsv.rows.length;
     const inputCount = activeCsv.headers.length;
 
     // log para desenvolvimento: exibe o conteúdo do CSV no console ao carregar
@@ -213,6 +218,7 @@ function App() {
             setter(emptyCsv);
             if (shouldStoreTrainingResults) {
                 setTrainingUniqueResults([]);
+                setTestCsv(emptyCsv);
             }
             return;
         }
@@ -272,6 +278,101 @@ function App() {
             if (shouldStoreTrainingResults) {
                 setTrainingUniqueResults([]);
             }
+        }
+    }
+
+    async function readSingleCsvFile(file) {
+        if (!file) {
+            setSingleCsv(emptyCsv);
+            setTestCsv(emptyCsv);
+            setSingleCsvSource(null);
+            setTrainingUniqueResults([]);
+            return;
+        }
+
+        try {
+            const text = await file.text();
+            const parsed = parseCsv(text);
+            if (parsed.rawRows.length < 2) {
+                throw new Error('Arquivo unico precisa de pelo menos duas linhas de dados.');
+            }
+            const nextSource = { name: file.name, ...parsed };
+            setSingleCsvSource(nextSource);
+            applySingleCsvSplit(nextSource, trainSplitPercent);
+        } catch (error) {
+            console.error('Falha ao dividir CSV:', error);
+            setSingleCsv({
+                ...emptyCsv,
+                name: file.name,
+                error: 'Nao foi possivel dividir o CSV selecionado.',
+            });
+            setTestCsv(emptyCsv);
+            setSingleCsvSource(null);
+            setTrainingUniqueResults([]);
+        }
+    }
+
+    function applySingleCsvSplit(source, splitPercent) {
+        const safePercent = Math.min(90, Math.max(10, Number(splitPercent) || 70));
+        const splitRatio = safePercent / 100;
+        const splitIndex = Math.min(source.rawRows.length - 1, Math.max(1, Math.floor(source.rawRows.length * splitRatio)));
+        const trainingRawRows = source.rawRows.slice(0, splitIndex);
+        const trainingResults = source.results.slice(0, splitIndex);
+        const testingRawRows = source.rawRows.slice(splitIndex);
+        const testingResults = source.results.slice(splitIndex);
+        const attributeRanges = getAttributeRanges(trainingRawRows);
+        const uniqueTrainingResults = getUniqueResults(trainingResults);
+
+        setTrainSplitPercent(safePercent);
+        setSingleCsv({
+            name: `${source.name} (treino ${safePercent}%)`,
+            headers: source.headers,
+            rows: normalizeCsvRows(trainingRawRows, attributeRanges),
+            rawRows: trainingRawRows,
+            results: trainingResults,
+            resultHeader: source.resultHeader,
+            attributeRanges,
+            error: '',
+        });
+        setTestCsv({
+            name: `${source.name} (teste ${100 - safePercent}%)`,
+            headers: source.headers,
+            rows: normalizeCsvRows(testingRawRows, attributeRanges),
+            rawRows: testingRawRows,
+            results: testingResults,
+            resultHeader: source.resultHeader,
+            attributeRanges,
+            error: testingRawRows.length === 0 ? 'Arquivo sem linhas suficientes para teste.' : '',
+        });
+        setTrainingUniqueResults(uniqueTrainingResults);
+        setNumberOfOutputs(uniqueTrainingResults.length);
+        setEvaluationState((current) => ({
+            ...current,
+            status: 'idle',
+            total: 0,
+            correct: 0,
+            accuracy: 0,
+            labels: [],
+            matrix: [],
+            predictions: [],
+        }));
+        setNotification({
+            title: 'Arquivo dividido',
+            description: 'O CSV completo foi separado automaticamente em treino e teste.',
+            details: [
+                `${trainingRawRows.length} linhas de treino`,
+                `${testingRawRows.length} linhas de teste`,
+                `${safePercent}% / ${100 - safePercent}%`,
+            ],
+        });
+    }
+
+    function handleTrainSplitPercentChange(event) {
+        const nextPercent = Number(event.target.value);
+        setTrainSplitPercent(nextPercent);
+
+        if (singleCsvSource) {
+            applySingleCsvSplit(singleCsvSource, nextPercent);
         }
     }
 
@@ -400,6 +501,19 @@ function App() {
             return;
         }
 
+        runTraining({
+            csv,
+            uniqueTrainingResults,
+            hiddenNeuronsCount,
+            maxEpochs,
+            errorThreshold,
+            nextConfig: config,
+            modeLabel: 'Treinamento',
+        });
+    }
+
+    function runTraining({ csv, uniqueTrainingResults, hiddenNeuronsCount, maxEpochs, errorThreshold, nextConfig, modeLabel, initialState }) {
+        const previousModel = mlpModel.inputToHidden.length > 0 ? mlpModel : null;
         const trainingResult = trainMlp({
             rows: csv.rows,
             results: csv.results,
@@ -407,7 +521,8 @@ function App() {
             hiddenNeuronsCount,
             maxEpochs,
             errorThreshold,
-            config,
+            config: nextConfig,
+            initialState,
         });
 
         setTrainingUniqueResults(uniqueTrainingResults);
@@ -415,7 +530,7 @@ function App() {
         setWeights(trainingResult.weights);
         setMlpHiddenInformation(trainingResult.hidden);
         setMlpOutputInformation(trainingResult.output);
-        setPreviousMlpModel(mlpModel.inputToHidden.length > 0 ? mlpModel : null);
+        setPreviousMlpModel(previousModel);
         setMlpModel(trainingResult.model);
         setMlp((current) => ({
             ...current,
@@ -430,25 +545,84 @@ function App() {
             stoppedBy: trainingResult.stoppedBy,
         });
         setNotification({
-            title: 'Treinamento concluido',
-            description: `Treinamento encerrado por ${trainingResult.stoppedBy}.`,
+            title: `${modeLabel} concluido`,
+            description: `${modeLabel} encerrado por ${trainingResult.stoppedBy}.`,
             details: [
-                `${trainingResult.epochs} epocas`,
+                `${trainingResult.epochs} epocas acumuladas`,
                 `erro medio ${trainingResult.avgError.toFixed(6)}`,
                 `${trainingResult.weights.length} pesos ajustados`,
             ],
         });
-        console.log('Treinamento MLP:', trainingResult);
+        console.log(`${modeLabel} MLP:`, trainingResult);
+    }
+
+    function handleContinueTraining(shouldReduceLearningRate = false) {
+        const csv = mode === 'single' ? singleCsv : trainCsv;
+        const uniqueTrainingResults = trainingUniqueResults.length > 0 ? trainingUniqueResults : getUniqueResults(csv.results);
+        const hiddenNeuronsCount = Number.parseInt(config.hiddenNeurons, 10);
+        const maxEpochs = Number.parseInt(config.maxEpochs, 10);
+        const errorThreshold = Number(config.errorThreshold);
+        const currentLearningRate = Number(config.learningRate);
+
+        if (mlpModel.inputToHidden.length === 0 || mlpHiddenInformation.net.length === 0 || mlpOutputInformation.net.length === 0) {
+            setNotification({
+                title: 'Modelo necessario',
+                description: 'Treine a MLP pelo menos uma vez antes de continuar.',
+            });
+            return;
+        }
+
+        if (!hiddenNeuronsCount || hiddenNeuronsCount <= 0 || !maxEpochs || maxEpochs <= 0 || Number.isNaN(errorThreshold)) {
+            setNotification({
+                title: 'Configuracao incompleta',
+                description: 'Confira neuronios ocultos, epocas e limiar de erro antes de continuar.',
+            });
+            return;
+        }
+
+        if (Number.isNaN(currentLearningRate) || currentLearningRate <= 0 || currentLearningRate > 1) {
+            setNotification({
+                title: 'Taxa invalida',
+                description: 'A taxa de aprendizagem deve ser maior que 0 e menor ou igual a 1.',
+            });
+            return;
+        }
+
+        const nextLearningRate = shouldReduceLearningRate ? Math.max(currentLearningRate * 0.9, 0.000001) : currentLearningRate;
+        const nextConfig = {
+            ...config,
+            learningRate: String(nextLearningRate),
+        };
+
+        if (shouldReduceLearningRate) {
+            setConfig(nextConfig);
+        }
+
+        runTraining({
+            csv,
+            uniqueTrainingResults,
+            hiddenNeuronsCount,
+            maxEpochs,
+            errorThreshold,
+            nextConfig,
+            modeLabel: shouldReduceLearningRate ? 'Continuacao com taxa reduzida' : 'Continuacao',
+            initialState: {
+                model: mlpModel,
+                hidden: mlpHiddenInformation,
+                output: mlpOutputInformation,
+                history: trainingState.history,
+            },
+        });
     }
 
     function handlePredictTest() {
-        const csv = mode === 'single' ? singleCsv : trainCsv;
+        const csv = testCsv.rows.length > 0 ? testCsv : mode === 'single' ? singleCsv : trainCsv;
         const lineIndex = Number.parseInt(predictTest.lineIndex, 10) || 0;
 
-        if (weights.length === 0 || mlpModel.inputToHidden.length === 0) {
+        if (mlpModel.inputToHidden.length === 0 || mlpModel.hiddenToOutput.length === 0) {
             setNotification({
                 title: 'Modelo necessário',
-                description: 'Gere pesos aleatórios antes de testar o predict.',
+                description: 'Treine a MLP antes de testar a inferencia.',
             });
             return;
         }
@@ -460,27 +634,22 @@ function App() {
             }));
             setNotification({
                 title: 'Linha inválida',
-                description: 'Carregue um CSV de treino e use um índice de linha existente.',
+                description: 'Carregue uma base de teste e use um indice de linha existente.',
             });
             return;
         }
 
         const lineInputs = csv.rows[lineIndex].map((value) => Number(value));
         const expectedResult = csv.results[lineIndex];
-        const predictionResult = predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInputs, expectedResult, config, mlp.avgError);
-
-        setMlpHiddenInformation(predictionResult.hidden);
-        setMlpOutputInformation(predictionResult.output);
-        setPreviousMlpModel(mlpModel);
-        setMlpModel(predictionResult.model);
-        setMlp((current) => ({
-            ...current,
-            avgError: predictionResult.avgError,
-        }));
+        const predictionResult = runMlp(mlpModel, lineInputs, config);
+        const correct = expectedResult === predictionResult.predictedLabel;
         setPredictTest({
             lineIndex,
             inputs: lineInputs,
             expectedResult,
+            predictedResult: predictionResult.predictedLabel,
+            correct,
+            outputs: predictionResult.outputs,
             result: predictionResult,
             error: '',
         });
@@ -488,24 +657,23 @@ function App() {
             lineIndex,
             lineInputs,
             expectedResult,
-            mlpModel: predictionResult.model,
+            predictedResult: predictionResult.predictedLabel,
             result: predictionResult,
         });
         setNotification({
             title: 'Predict testado',
-            description: 'O resultado do predict foi enviado para o console.',
+            description: correct ? 'A classe obtida bateu com a esperada.' : 'A classe obtida foi diferente da esperada.',
             details: [
                 `linha ${lineIndex + 1}`,
                 `classe esperada ${expectedResult}`,
-                `${lineInputs.length} entradas usadas`,
-                `${predictionResult.hidden.net.length} nets ocultos`,
-                `${predictionResult.output.net.length} nets de saída`,
+                `classe obtida ${predictionResult.predictedLabel}`,
+                `${predictionResult.outputs.length} saidas calculadas`,
             ],
         });
     }
 
     function handleEvaluateTestSet() {
-        const csv = mode === 'single' ? singleCsv : testCsv;
+        const csv = testCsv;
         const labels = trainingUniqueResults.length > 0 ? trainingUniqueResults : getUniqueResults(trainCsv.results);
 
         if (mlpModel.inputToHidden.length === 0 || mlpOutputInformation.classe.length === 0) {
@@ -577,8 +745,20 @@ function App() {
                         </div>
                     ) : (
                         <div className="stack">
-                            <FileInput label="CSV completo" csv={singleCsv} onFile={(file) => readCsvFile(file, setSingleCsv, true)} />
-                            <div className="notice">A divisão em treino/teste não foi implementada.</div>
+                            <FileInput label="CSV completo" csv={singleCsv} onFile={readSingleCsvFile} />
+                            <label className="field">
+                                <span>Percentual para treino</span>
+                                <input
+                                    type="number"
+                                    min="10"
+                                    max="90"
+                                    value={trainSplitPercent}
+                                    onChange={handleTrainSplitPercentChange}
+                                />
+                            </label>
+                            <div className="notice">
+                                O arquivo completo e dividido automaticamente em {trainSplitPercent}% treino e {100 - trainSplitPercent}% teste.
+                            </div>
                         </div>
                     )}
 
@@ -682,7 +862,7 @@ function App() {
 
                     <div className="grid two">
                         <CsvPanel title="Base de Treino" csv={mode === 'single' ? singleCsv : trainCsv} />
-                        <CsvPanel title="Base de Teste" csv={mode === 'single' ? emptyCsv : testCsv} />
+                        <CsvPanel title="Base de Teste" csv={testCsv} />
                     </div>
 
                     <section className="panel network-panel">
@@ -698,19 +878,23 @@ function App() {
                                 Avaliar teste
                             </button>
                         </div>
-                        <div className="network">
-                            <Layer title="Entrada" labels={['X1', 'X2', 'X3', '...']} />
-                            <div className="connector" />
-                            <Layer title="Camada escondida" labels={['H1', 'H2', 'H3']} />
-                            <div className="connector" />
-                            <Layer title="Saída" labels={['C1', 'C2', 'C3', '...']} />
-                        </div>
+                        <NetworkGraph
+                            model={mlpModel}
+                            inputLabels={activeCsv.headers.length > 0 ? activeCsv.headers : ['X1', 'X2', 'X3']}
+                            hiddenCount={Number.parseInt(config.hiddenNeurons, 10) || mlpHiddenInformation.net.length || 3}
+                            outputLabels={trainingUniqueResults.length > 0 ? trainingUniqueResults : ['C1', 'C2', 'C3']}
+                        />
                         <ModelPreview model={mlpModel} previousModel={previousMlpModel} weights={weights} />
                         <PredictTestPanel predictTest={predictTest} setPredictTest={setPredictTest} avgError={mlp.avgError} />
                     </section>
 
                     <div className="grid two">
-                        <TrainingPanel uniqueResults={trainingUniqueResults} trainingState={trainingState} />
+                        <TrainingPanel
+                            uniqueResults={trainingUniqueResults}
+                            trainingState={trainingState}
+                            onContinueTraining={() => handleContinueTraining(false)}
+                            onReduceLearningRate={() => handleContinueTraining(true)}
+                        />
                         <ConfusionMatrixPanel evaluationState={evaluationState} />
                     </div>
                 </section>
@@ -843,6 +1027,69 @@ function Layer({ title, labels }) {
     );
 }
 
+function NetworkGraph({ model, inputLabels, hiddenCount, outputLabels }) {
+    const hiddenLabels = Array.from({ length: hiddenCount }, (_, index) => `H${index + 1}`);
+    const limitedInputLabels = inputLabels.slice(0, 8);
+    const limitedHiddenLabels = hiddenLabels.slice(0, 8);
+    const limitedOutputLabels = outputLabels.slice(0, 8);
+    const hasWeights = model.inputToHidden.length > 0 || model.hiddenToOutput.length > 0;
+
+    return (
+        <div className="network">
+            <Layer title="Entrada" labels={formatLayerLabels(limitedInputLabels, inputLabels.length)} />
+            <ConnectionBand
+                title="Entrada -> Oculta"
+                connections={model.inputToHidden}
+                emptyLabel={hasWeights ? 'Sem pesos de entrada' : 'Gere ou treine pesos'}
+            />
+            <Layer title="Camada escondida" labels={formatLayerLabels(limitedHiddenLabels, hiddenLabels.length)} />
+            <ConnectionBand
+                title="Oculta -> Saida"
+                connections={model.hiddenToOutput}
+                emptyLabel={hasWeights ? 'Sem pesos de saida' : 'Gere ou treine pesos'}
+            />
+            <Layer title="Saida" labels={formatLayerLabels(limitedOutputLabels, outputLabels.length)} />
+        </div>
+    );
+}
+
+function formatLayerLabels(labels, totalCount) {
+    if (totalCount <= labels.length) {
+        return labels;
+    }
+
+    return [...labels, '...'];
+}
+
+function ConnectionBand({ title, connections, emptyLabel }) {
+    const visibleConnections = connections.slice(0, 18);
+
+    return (
+        <div className="connection-band" aria-label={title}>
+            <span>{title}</span>
+            <div className="connection-lines">
+                {visibleConnections.length > 0 ? (
+                    visibleConnections.map((connection, index) => (
+                        <button
+                            className="connection-line"
+                            key={`${connection.from}-${connection.to}-${index}`}
+                            style={{
+                                '--line-weight': `${Math.max(1, Math.min(5, Math.abs(connection.weight) * 5))}px`,
+                            }}
+                            title={`${connection.from} -> ${connection.to}: ${connection.weight.toFixed(6)}`}
+                            type="button"
+                        >
+                            <span>{connection.weight.toFixed(4)}</span>
+                        </button>
+                    ))
+                ) : (
+                    <small>{emptyLabel}</small>
+                )}
+            </div>
+        </div>
+    );
+}
+
 function ModelPreview({ model, previousModel, weights }) {
     const safeModel = model ?? { inputToHidden: [], hiddenToOutput: [] };
     const inputToHiddenPreview = safeModel.inputToHidden.slice(0, 12);
@@ -914,7 +1161,15 @@ function PredictTestPanel({ predictTest, setPredictTest, avgError }) {
                 <strong>{predictTest.expectedResult || '-'}</strong>
             </div>
             <div className="predict-summary">
-                <span>Erro médio</span>
+                <span>Classe obtida</span>
+                <strong>{predictTest.predictedResult || '-'}</strong>
+            </div>
+            <div className={predictTest.correct === null ? 'predict-summary' : predictTest.correct ? 'predict-summary predict-hit' : 'predict-summary predict-miss'}>
+                <span>Status</span>
+                <strong>{predictTest.correct === null ? '-' : predictTest.correct ? 'Acerto' : 'Erro'}</strong>
+            </div>
+            <div className="predict-summary">
+                <span>Erro medio treino</span>
                 <strong>{Number(avgError || 0).toFixed(6)}</strong>
             </div>
             {predictTest.error ? <div className="error">{predictTest.error}</div> : null}
@@ -922,7 +1177,7 @@ function PredictTestPanel({ predictTest, setPredictTest, avgError }) {
     );
 }
 
-function TrainingPanel({ uniqueResults, trainingState }) {
+function TrainingPanel({ uniqueResults, trainingState, onContinueTraining, onReduceLearningRate }) {
     const lastHistory = trainingState.history.slice(-10).reverse();
     return (
         <section className="panel placeholder">
@@ -949,7 +1204,19 @@ function TrainingPanel({ uniqueResults, trainingState }) {
                     <strong>{trainingState.stoppedBy || '-'}</strong>
                     <small>parada</small>
                 </div>
-                {trainingState.plateau ? <p>Possivel plato identificado nas ultimas 10 epocas.</p> : null}
+                {trainingState.plateau ? (
+                    <>
+                        <p>Possivel plato identificado nas ultimas 10 epocas.</p>
+                        <div className="plateau-actions">
+                            <button type="button" onClick={onContinueTraining}>
+                                Continuar
+                            </button>
+                            <button type="button" onClick={onReduceLearningRate}>
+                                Reduzir taxa 10%
+                            </button>
+                        </div>
+                    </>
+                ) : null}
             </div>
             {lastHistory.length > 0 ? (
                 <ul className="history-list">
@@ -1171,18 +1438,33 @@ function hasTrainingPlateau(history) {
     return deviation >= 0 && deviation <= 0.00001;
 }
 
-function trainMlp({ rows, results, uniqueResults, hiddenNeuronsCount, maxEpochs, errorThreshold, config }) {
+function cloneMlpModel(model) {
+    return {
+        inputToHidden: model.inputToHidden.map((connection) => ({ ...connection })),
+        hiddenToOutput: model.hiddenToOutput.map((connection) => ({ ...connection })),
+    };
+}
+
+function cloneLayerInformation(layer) {
+    return Object.fromEntries(
+        Object.entries(layer).map(([key, value]) => [key, Array.isArray(value) ? [...value] : value])
+    );
+}
+
+function trainMlp({ rows, results, uniqueResults, hiddenNeuronsCount, maxEpochs, errorThreshold, config, initialState }) {
     const inputCount = rows[0]?.length ?? 0;
     const outputCount = uniqueResults.length;
-    const initialWeights = generateRandomWeights(inputCount, hiddenNeuronsCount, outputCount);
-    const { MLPWeights, MlpInformation } = buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, initialWeights, uniqueResults);
+    const shouldContinue = Boolean(initialState?.model?.inputToHidden?.length);
+    const initialWeights = shouldContinue ? [] : generateRandomWeights(inputCount, hiddenNeuronsCount, outputCount);
+    const builtMlp = shouldContinue ? null : buildMlpWeights(inputCount, hiddenNeuronsCount, outputCount, initialWeights, uniqueResults);
 
-    let currentModel = MLPWeights;
-    let currentHidden = MlpInformation.hidden;
-    let currentOutput = MlpInformation.output;
+    let currentModel = shouldContinue ? cloneMlpModel(initialState.model) : builtMlp.MLPWeights;
+    let currentHidden = shouldContinue ? cloneLayerInformation(initialState.hidden) : builtMlp.MlpInformation.hidden;
+    let currentOutput = shouldContinue ? cloneLayerInformation(initialState.output) : builtMlp.MlpInformation.output;
     let avgError = Number.POSITIVE_INFINITY;
     let stoppedBy = 'maximo de epocas';
-    const history = [];
+    const history = initialState?.history ? [...initialState.history] : [];
+    const initialEpoch = history.at(-1)?.epoch ?? 0;
 
     for (let epoch = 1; epoch <= maxEpochs; epoch += 1) {
         let epochError = 0;
@@ -1197,7 +1479,7 @@ function trainMlp({ rows, results, uniqueResults, hiddenNeuronsCount, maxEpochs,
         }
 
         avgError = epochError / rows.length;
-        history.push({ epoch, avgError });
+        history.push({ epoch: initialEpoch + epoch, avgError });
 
         if (avgError <= errorThreshold) {
             stoppedBy = 'limiar de erro';
