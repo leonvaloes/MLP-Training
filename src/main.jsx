@@ -6,8 +6,10 @@ const emptyCsv = {
     name: '',
     headers: [],
     rows: [],
+    rawRows: [],
     results: [],
     resultHeader: '',
+    attributeRanges: [],
     error: '',
 };
 
@@ -37,6 +39,37 @@ function parseCsvLine(line) {
     return values;
 }
 
+function parseCsvInputRow(row) {
+    return row.map((value) => Number(value));
+}
+
+function getAttributeRanges(rows) {
+    const inputCount = rows[0]?.length ?? 0;
+
+    return Array.from({ length: inputCount }, (_, attributeIndex) => {
+        const values = rows.map((row) => row[attributeIndex]);
+
+        return {
+            min: Math.min(...values),
+            max: Math.max(...values),
+        };
+    });
+}
+
+function normalizeCsvRows(rows, attributeRanges) {
+    return rows.map((row) =>
+        row.map((value, attributeIndex) => {
+            const range = attributeRanges[attributeIndex];
+
+            if (!range || range.max === range.min) {
+                return 0;
+            }
+
+            return (value - range.min) / (range.max - range.min);
+        })
+    );
+}
+
 function parseCsv(text) {
     const lines = text
         .replace(/^\uFEFF/, '')
@@ -51,10 +84,14 @@ function parseCsv(text) {
     const resultHeader = allHeaders.at(-1) ?? '';
     const headers = allHeaders.slice(0, -1);
     const parsedRows = lines.slice(1).map(parseCsvLine);
-    const rows = parsedRows.map((row) => row.slice(0, -1));
+    const rawRows = parsedRows.map((row) => parseCsvInputRow(row.slice(0, -1)));
     const results = parsedRows.map((row) => row.at(-1) ?? '');
 
-    return { headers, rows, results, resultHeader };
+    if (rawRows.some((row) => row.some((value) => Number.isNaN(value)))) {
+        throw new Error('CSV possui valores de entrada nao numericos.');
+    }
+
+    return { headers, rawRows, results, resultHeader };
 }
 
 function getUniqueResults(results) {
@@ -84,6 +121,13 @@ function App() {
         // mlpModel
         avgError: 0,
     });
+    const [predictTest, setPredictTest] = useState({
+        lineIndex: 0,
+        inputs: [],
+        expectedResult: '',
+        result: null,
+        error: '',
+    });
 
     const [mlpHiddenInformation, setMlpHiddenInformation] = useState({
         net: [],
@@ -100,6 +144,7 @@ function App() {
         inputToHidden: [],
         hiddenToOutput: [],
     });
+    const [previousMlpModel, setPreviousMlpModel] = useState(null);
     const [weights, setWeights] = useState([]);
     const [notification, setNotification] = useState(null);
     const [isNotificationHovered, setIsNotificationHovered] = useState(false);
@@ -165,18 +210,39 @@ function App() {
             });
 
             const parsed = parseCsv(text);
+            const attributeRanges = shouldStoreTrainingResults ? getAttributeRanges(parsed.rawRows) : trainCsv.attributeRanges;
+
+            if (!shouldStoreTrainingResults && attributeRanges.length === 0) {
+                throw new Error('Carregue o CSV de treino antes do CSV de teste.');
+            }
+
+            const rows = normalizeCsvRows(parsed.rawRows, attributeRanges);
             setter({
                 name: file.name,
                 headers: parsed.headers,
-                rows: parsed.rows,
+                rows,
+                rawRows: parsed.rawRows,
                 results: parsed.results,
                 resultHeader: parsed.resultHeader,
+                attributeRanges,
                 error: '',
             });
             if (shouldStoreTrainingResults) {
                 const uniqueTrainingResults = getUniqueResults(parsed.results);
                 setTrainingUniqueResults(uniqueTrainingResults);
                 setNumberOfOutputs(uniqueTrainingResults.length);
+                setTestCsv((current) => {
+                    if (current.rawRows.length === 0) {
+                        return current;
+                    }
+
+                    return {
+                        ...current,
+                        rows: normalizeCsvRows(current.rawRows, attributeRanges),
+                        attributeRanges,
+                        error: '',
+                    };
+                });
                 console.log('Classes únicas do treinamento:', uniqueTrainingResults);
             }
         } catch (error) {
@@ -233,6 +299,7 @@ function App() {
         setWeights(randomWeights);
         setMlpHiddenInformation(MlpInformation.hidden);
         setMlpOutputInformation(MlpInformation.output);
+        setPreviousMlpModel(null);
         setMlpModel(MLPWeights);
         setNotification({
             title: 'Teste aleatório gerado',
@@ -269,6 +336,9 @@ function App() {
     }
 
     function handlePredictTest() {
+        const csv = mode === 'single' ? singleCsv : trainCsv;
+        const lineIndex = Number.parseInt(predictTest.lineIndex, 10) || 0;
+
         if (weights.length === 0 || mlpModel.inputToHidden.length === 0) {
             setNotification({
                 title: 'Modelo necessário',
@@ -277,20 +347,50 @@ function App() {
             return;
         }
 
-        const lineInputs = Array.from({ length: inputCount || 3 }, () => Number(Math.random().toFixed(4)));
-        const predictionResult = predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInputs);
+        if (!csv.rows[lineIndex] || !csv.results[lineIndex]) {
+            setPredictTest((current) => ({
+                ...current,
+                error: 'Linha inválida para testar o predict.',
+            }));
+            setNotification({
+                title: 'Linha inválida',
+                description: 'Carregue um CSV de treino e use um índice de linha existente.',
+            });
+            return;
+        }
+
+        const lineInputs = csv.rows[lineIndex].map((value) => Number(value));
+        const expectedResult = csv.results[lineIndex];
+        const predictionResult = predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInputs, expectedResult, config, mlp.avgError);
 
         setMlpHiddenInformation(predictionResult.hidden);
         setMlpOutputInformation(predictionResult.output);
+        setPreviousMlpModel(mlpModel);
+        setMlpModel(predictionResult.model);
+        setMlp((current) => ({
+            ...current,
+            avgError: predictionResult.avgError,
+        }));
+        setPredictTest({
+            lineIndex,
+            inputs: lineInputs,
+            expectedResult,
+            result: predictionResult,
+            error: '',
+        });
         console.log('Teste predict:', {
+            lineIndex,
             lineInputs,
-            MlpModel,
+            expectedResult,
+            mlpModel: predictionResult.model,
             result: predictionResult,
         });
         setNotification({
             title: 'Predict testado',
             description: 'O resultado do predict foi enviado para o console.',
             details: [
+                `linha ${lineIndex + 1}`,
+                `classe esperada ${expectedResult}`,
                 `${lineInputs.length} entradas usadas`,
                 `${predictionResult.hidden.net.length} nets ocultos`,
                 `${predictionResult.output.net.length} nets de saída`,
@@ -450,7 +550,8 @@ function App() {
                             <div className="connector" />
                             <Layer title="Saída" labels={['C1', 'C2', 'C3', '...']} />
                         </div>
-                        <ModelPreview model={mlpModel} weights={weights} />
+                        <ModelPreview model={mlpModel} previousModel={previousMlpModel} weights={weights} />
+                        <PredictTestPanel predictTest={predictTest} setPredictTest={setPredictTest} avgError={mlp.avgError} />
                     </section>
 
                     <div className="grid two">
@@ -590,10 +691,12 @@ function Layer({ title, labels }) {
     );
 }
 
-function ModelPreview({ model, weights }) {
+function ModelPreview({ model, previousModel, weights }) {
     const safeModel = model ?? { inputToHidden: [], hiddenToOutput: [] };
-    const inputToHiddenPreview = safeModel.inputToHidden.slice(0, 4);
-    const hiddenToOutputPreview = safeModel.hiddenToOutput.slice(0, 4);
+    const inputToHiddenPreview = safeModel.inputToHidden.slice(0, 12);
+    const hiddenToOutputPreview = safeModel.hiddenToOutput.slice(0, 12);
+    const previousInputToHidden = previousModel?.inputToHidden ?? [];
+    const previousHiddenToOutput = previousModel?.hiddenToOutput ?? [];
 
     if (weights.length === 0) {
         return <div className="model-preview empty-preview">Nenhum teste aleatório gerado ainda.</div>;
@@ -605,27 +708,64 @@ function ModelPreview({ model, weights }) {
                 <span>Total de pesos</span>
                 <strong>{weights.length}</strong>
             </div>
-            <WeightList title="Entrada → Oculta" items={inputToHiddenPreview} />
-            <WeightList title="Oculta → Saída" items={hiddenToOutputPreview} />
+            <WeightList title="Entrada → Oculta" items={inputToHiddenPreview} previousItems={previousInputToHidden} />
+            <WeightList title="Oculta → Saída" items={hiddenToOutputPreview} previousItems={previousHiddenToOutput} />
         </div>
     );
 }
 
-function WeightList({ title, items }) {
+function WeightList({ title, items, previousItems }) {
     return (
         <div className="weight-list">
             <span>{title}</span>
             {items.length > 0 ? (
                 <ul>
-                    {items.map((item) => (
-                        <li key={`${item.from}-${item.to}`}>
-                            {item.from} → {item.to}: <strong>{item.weight.toFixed(4)}</strong>
-                        </li>
-                    ))}
+                    {items.map((item, index) => {
+                        const previousWeight = previousItems[index]?.weight;
+                        const changed = previousWeight !== undefined && previousWeight !== item.weight;
+
+                        return (
+                            <li className={changed ? 'weight-changed' : ''} key={`${item.from}-${item.to}`}>
+                                <span>{item.from} → {item.to}</span>
+                                <strong>{item.weight.toFixed(6)}</strong>
+                                {changed ? <small>{previousWeight.toFixed(6)}</small> : null}
+                            </li>
+                        );
+                    })}
                 </ul>
             ) : (
                 <p>Sem conexões geradas.</p>
             )}
+        </div>
+    );
+}
+
+function PredictTestPanel({ predictTest, setPredictTest, avgError }) {
+    return (
+        <div className="predict-panel">
+            <div className="field compact-field">
+                <span>Linha para testar predict</span>
+                <input
+                    type="number"
+                    min="0"
+                    value={predictTest.lineIndex}
+                    onChange={(event) =>
+                        setPredictTest((current) => ({
+                            ...current,
+                            lineIndex: event.target.value,
+                        }))
+                    }
+                />
+            </div>
+            <div className="predict-summary">
+                <span>Classe esperada</span>
+                <strong>{predictTest.expectedResult || '-'}</strong>
+            </div>
+            <div className="predict-summary">
+                <span>Erro médio</span>
+                <strong>{Number(avgError || 0).toFixed(6)}</strong>
+            </div>
+            {predictTest.error ? <div className="error">{predictTest.error}</div> : null}
         </div>
     );
 }
@@ -761,80 +901,138 @@ function generateRandomWeights(inputCount, hiddenNeuronsCount, outputCount) {
     return randomWeights;
 }
 
-function predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInputs, config, avgError) {
+function predict(mlpHiddenInformation, mlpOutputInformation, mlpModel, lineInputs, expectedResult, config, avgError) {
     const hiddenNeuronsCount = mlpHiddenInformation.net.length;
     const inputCount = lineInputs.length;
     const outputCount = mlpOutputInformation.net.length;
-    const hiddenNet = [...mlpHiddenInformation.net];
-    const hiddenI = [...mlpHiddenInformation.i];
 
-    const outputNet = [...mlpOutputInformation.net];
-    const outputI = [...mlpOutputInformation.i];
-    const outputErro = [...mlpOutputInformation.erro];
+    const hiddenNet = Array(hiddenNeuronsCount).fill(0);
+    const hiddenI = Array(hiddenNeuronsCount).fill(0);
+    const hiddenErro = Array(hiddenNeuronsCount).fill(0);
+
+    const outputNet = Array(outputCount).fill(0);
+    const outputI = Array(outputCount).fill(0);
+    const outputErro = Array(outputCount).fill(0);
     const outputClasse = [...mlpOutputInformation.classe];
 
-    const classeValue = lineInputs.split(',').pop().trim();
-    // Cálculo do net da camada de entrada para a camada oculta.
-    for (let i = 0; i < hiddenNeuronsCount; i++) {
+    const nextModel = {
+        inputToHidden: mlpModel.inputToHidden.map((connection) => ({ ...connection })),
+        hiddenToOutput: mlpModel.hiddenToOutput.map((connection) => ({ ...connection })),
+    };
+
+    const learningRate = Number(config.learningRate) || 0.1;
+    const derivative = 0.5; // porque a função usada aqui é f(net) = net / 2
+
+    // 1. Calcula NET e I da camada oculta.
+    for (let hiddenIndex = 0; hiddenIndex < hiddenNeuronsCount; hiddenIndex += 1) {
         let net = 0;
-        for (let j = 0; j < inputCount; j++) {
-            const indice = j * (hiddenNeuronsCount - 1) + i;
-            const inputConnection = mlpModel.inputToHidden[indice];
-            net += (inputConnection?.weight ?? 0) * lineInputs[j];
+
+        for (let inputIndex = 0; inputIndex < inputCount; inputIndex += 1) {
+            const weightIndex = inputIndex * hiddenNeuronsCount + hiddenIndex;
+            const connection = nextModel.inputToHidden[weightIndex];
+
+            net += (connection?.weight ?? 0) * lineInputs[inputIndex];
         }
-        hiddenNet[i] = net;
-        hiddenI[i] = net / 2;
+
+        hiddenNet[hiddenIndex] = net;
+        hiddenI[hiddenIndex] = net / 2;
     }
 
-    // Cálculo do net da camada oculta para a camada de saída.
-    for (let i = 0; i < outputCount; i++) {
+    // 2. Calcula NET, I e erro da camada de saída.
+    for (let outputIndex = 0; outputIndex < outputCount; outputIndex += 1) {
         let net = 0;
-        for (let j = 0; j < hiddenNeuronsCount; j++) {
-            const indice = j * (outputCount - 1) + i;
-            const hiddenConnection = mlpModel.hiddenToOutput[indice];
-            net += (hiddenConnection?.weight ?? 0) * hiddenNet[j];
-        }
-        outputNet[i] = net;
-        outputI[i] = net / 2;
 
-        //Calculo do erro
-        let auxI = 1 - net / 2;
-        if (outputClasse[i] == classeValue) {
-            outputErro[i] = (1 - auxI) * 0.5;
-        } else {
-            outputErro[i] = auxI * 0.5;
+        for (let hiddenIndex = 0; hiddenIndex < hiddenNeuronsCount; hiddenIndex += 1) {
+            const weightIndex = hiddenIndex * outputCount + outputIndex;
+            const connection = nextModel.hiddenToOutput[weightIndex];
+
+            net += (connection?.weight ?? 0) * hiddenI[hiddenIndex];
+        }
+
+        outputNet[outputIndex] = net;
+        outputI[outputIndex] = net / 2;
+
+        const desired = outputClasse[outputIndex] === expectedResult ? 1 : 0;
+        outputErro[outputIndex] = (desired - outputI[outputIndex]) * derivative;
+    }
+
+    // 3. Salva os pesos antigos da camada oculta → saída.
+    // O erro da camada oculta precisa usar os pesos ANTES da atualização.
+    const hiddenToOutputWeightsBeforeUpdate =
+        nextModel.hiddenToOutput.map((connection) => connection.weight);
+
+    // 4. Calcula o erro da camada oculta.
+    for (let hiddenIndex = 0; hiddenIndex < hiddenNeuronsCount; hiddenIndex += 1) {
+        let sum = 0;
+
+        for (let outputIndex = 0; outputIndex < outputCount; outputIndex += 1) {
+            const weightIndex = hiddenIndex * outputCount + outputIndex;
+
+            sum +=
+                outputErro[outputIndex] *
+                hiddenToOutputWeightsBeforeUpdate[weightIndex];
+        }
+
+        hiddenErro[hiddenIndex] = sum * derivative;
+    }
+
+    // 5. Atualiza os pesos da camada oculta → saída.
+    for (let outputIndex = 0; outputIndex < outputCount; outputIndex += 1) {
+        for (let hiddenIndex = 0; hiddenIndex < hiddenNeuronsCount; hiddenIndex += 1) {
+            const weightIndex = hiddenIndex * outputCount + outputIndex;
+            const connection = nextModel.hiddenToOutput[weightIndex];
+
+            const newWeight =
+                connection.weight +
+                learningRate * outputErro[outputIndex] * hiddenI[hiddenIndex];
+
+            nextModel.hiddenToOutput[weightIndex].weight = newWeight;
         }
     }
 
-    //atualizar os pesos da camada ocuta para a camada de saída utilizando o erro calculado
-    for (let i = 0; i < outputCount; i++) {
-        for (let j = 0; j < hiddenNeuronsCount; j++) {
-            const indice = j * (outputCount - 1) + i;
-            const hiddenConnection = mlpModel.hiddenToOutput[indice];
+    // 6. Atualiza os pesos da camada entrada → oculta.
+    for (let hiddenIndex = 0; hiddenIndex < hiddenNeuronsCount; hiddenIndex += 1) {
+        for (let inputIndex = 0; inputIndex < inputCount; inputIndex += 1) {
+            const weightIndex = inputIndex * hiddenNeuronsCount + hiddenIndex;
+            const connection = nextModel.inputToHidden[weightIndex];
 
-            const newWeight = hiddenConnection.weight + config.learningRate * outputErro[i] * hiddenI[j];
-            mlpModel.hiddenToOutput[indice].weight = newWeight;
+            const newWeight =
+                connection.weight +
+                learningRate * hiddenErro[hiddenIndex] * lineInputs[inputIndex];
+
+            nextModel.inputToHidden[weightIndex].weight = newWeight;
         }
     }
 
-    //atualizar os pesos da camada entrada para a camada oculta utilizando o erro calculado
-    for (let i = 0; i < hiddenNeuronsCount; i++) {
-        for (let j = 0; j < inputCount; j++) {
-            const indice = j * (hiddenNeuronsCount - 1) + i;
-            const inputConnection = mlpModel.inputToHidden[indice];
-            const newWeight = inputConnection.weight + config.learningRate * outputErro[i];
-        }
-    }
-
-    //erro da rede
+    // 7. Calcula o erro da rede usando as saídas obtidas.
     let erroRede = 0;
-    for (let i = 0; i < outputCount; i++) {
-        auxI = outputErro[i] / 2;
-        erroRede += Math.pow(auxI, 2);
+
+    for (let outputIndex = 0; outputIndex < outputCount; outputIndex += 1) {
+        const desired = outputClasse[outputIndex] === expectedResult ? 1 : 0;
+        erroRede += Math.pow(desired - outputI[outputIndex], 2);
     }
+
     erroRede *= 0.5;
 
-    avgError = (erroRede + avgError) / 2;
+    const nextAvgError = avgError > 0 ? (erroRede + avgError) / 2 : erroRede;
+
+    return {
+        hidden: {
+            ...mlpHiddenInformation,
+            net: hiddenNet,
+            erro: hiddenErro,
+            i: hiddenI,
+        },
+        output: {
+            ...mlpOutputInformation,
+            net: outputNet,
+            i: outputI,
+            erro: outputErro,
+        },
+        model: nextModel,
+        erroRede,
+        avgError: nextAvgError,
+    };
 }
 
 createRoot(document.getElementById('root')).render(<App />);
